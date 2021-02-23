@@ -94,7 +94,7 @@ bool event_locator_impl<X>::find_events(bool* events,
 	// of the interval
 	this->sys->state_event_func(qstart,z[0]);
 	// Look for the first event inside of the interval [0,h]
-	for (;;)
+	while (this->sys->numEvents() > 0)
 	{
 		double tguess = h;
 		bool event_in_interval = false, found_event = false;
@@ -181,6 +181,22 @@ class discontinuous_event_locator:
 		discontinuous_event_locator(ode_system<X>* sys, double err_tol):
 			event_locator_impl<X>(
 					sys,err_tol,event_locator_impl<X>::DISCONTINUOUS){}
+};
+
+/**
+ * This event locator is for models that have no state events. Its find_events
+ * method simply returns false.
+ */
+template <typename X> class null_event_locator:
+	public event_locator<X>
+{
+	public:
+		null_event_locator():event_locator<X>(NULL){}
+		~null_event_locator(){}
+		bool find_events(bool*, const double*, double*, ode_solver<X>*, double&)
+		{
+			return false;
+		}
 };
 
 } // end of namespace 

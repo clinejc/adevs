@@ -34,6 +34,14 @@
 #include "adevs_models.h"
 #include <cfloat>
 #include <cstdlib>
+#include <list>
+#ifdef _OPENMP
+#include <omp.h>
+#else
+#define omp_get_max_threads() 1
+#define omp_get_thread_num() 0
+#define omp_in_parallel() false
+#endif
 using namespace std;
 
 namespace adevs
@@ -150,7 +158,7 @@ void Schedule<X,T>::schedule(Atomic<X,T>* model, T priority)
 	if (model->q_index != 0)
 	{
 		// Remove the model if the next event time is infinite
-		if (priority >= adevs_inf<T>()) 
+		if (!(priority < adevs_inf<T>())) 
 		{
 			// Move the item to the top of the heap
 			T min_priority = minPriority();

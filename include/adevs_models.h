@@ -43,16 +43,11 @@ namespace adevs
  * Declare network and atomic model so types can be used as the type of
  * parent in the basic Devs model and for type ID functions.  
  */
-template <class X, class T> class Network;
-template <class X, class T> class Atomic;
-template <class X, class T> class Schedule;
-template <class X, class T> class Simulator;
-
-/*
- * Constant indicating no processor assignment for the model. This is used by the
- * parallel simulator
- */
-#define ADEVS_NOT_ASSIGNED_TO_PROCESSOR -1
+template <typename X, typename T> class Network;
+template <typename X, typename T> class Atomic;
+template <typename X, typename T> class MealyAtomic;
+template <typename X, typename T> class Schedule;
+template <typename X, typename T> class Simulator;
 
 /**
  * The Devs class provides basic operations for all devs models.
@@ -60,13 +55,12 @@ template <class X, class T> class Simulator;
  * type to be used for time is set with the template argument
  * T. The default type for time is double.
  */
-template <class X, class T = double> class Devs
+template <typename X, typename T = double> class Devs
 {
 	public:
 		/// Default constructor.
 		Devs():
-		parent(NULL),
-		proc(ADEVS_NOT_ASSIGNED_TO_PROCESSOR)
+		parent(NULL)
 		{
 		}
 		/// Destructor.
@@ -81,6 +75,8 @@ template <class X, class T = double> class Devs
 		virtual Network<X,T>* typeIsNetwork() { return NULL; }
 		/// Returns NULL if this is not an atomic model; returns itself otherwise.
 		virtual Atomic<X,T>* typeIsAtomic() { return NULL; }
+		/// Returns NULL if this is not a mealy atomic model; returns itself otherwise.
+		virtual MealyAtomic<X,T>* typeIsMealyAtomic() { return NULL; }
 		/**
 		 * Get the model that contains this model as a component.  Returns
 		 * NULL if this model is at the top of the hierarchy.
@@ -108,30 +104,8 @@ template <class X, class T = double> class Devs
 		 * as part of the model transition.
 		 */
 		virtual bool model_transition() { return false; }
-		/**
-		 * This method should return the model's lookahead, which is used by the parallel
-		 * simulator to detect opportunities for parallel execution. The lookahead of a
-		 * model (network or atomic) is the time into the future for which its output
-		 * can be predicted without knowledge of the input to that that. This method
-		 * returns zero by default.
-		 */
-		virtual T lookahead() { return adevs_zero<T>(); }
-		/**
-		 * This assigns the model to a processor on the parallel computer. If this is
-		 * a network model, then its assignment will override the assignment of its
-		 * components. If no assignment is made, then the atomic leaves of the model
-		 * (or the model itself if it is already atomic) are assigned at random.
-		 */
-		void setProc(int proc) { this->proc = proc; }
-		/**
-		 * Get the processor assignment for this model. A negative number is returned
-		 * if no assignment was made.
-		 */
-		int getProc() { return proc; }
-
 	private:
 		Network<X,T>* parent;
-		int proc;
 };
 
 /**
@@ -139,7 +113,7 @@ template <class X, class T = double> class Devs
  * for notifying event listeners of output events, and for injecting
  * input into a running simulation.
  */
-template <class X, class T = double> class Event
+template <typename X, typename T = double> class Event
 {
 	public:
 		/// Constructor.  Sets the model to NULL.
@@ -186,17 +160,18 @@ template <class X, class T = double> class Event
 /**
  * Base type for all atomic DEVS models.
  */
-template <class X, class T = double> class Atomic: public Devs<X,T>
+template <typename X, typename T = double> class Atomic: public Devs<X,T>
 {
 	public:
 		/// The constructor should place the model into its initial state.
 		Atomic():
-		Devs<X,T>()
+			Devs<X,T>(),
+			tL(adevs_zero<T>()),
+			q_index(0), // The Schedule requires this to be zero
+			proc(-1),
+			x(NULL),
+			y(NULL)
 		{
-			tL = adevs_zero<T>();
-			tL_cp = adevs_sentinel<T>();
-			x = y = NULL;
-			q_index = 0; // The Schedule requires this to be zero
 		}
 		/// Internal transition function.
 		virtual void delta_int() = 0;
@@ -228,27 +203,6 @@ template <class X, class T = double> class Atomic: public Devs<X,T>
 		 * output by this model.
 		 */
 		virtual void gc_output(Bag<X>& g) = 0;
-		/**
-		 * This method is called by the simulator just before the model
-		 * is used in a lookahead calculation. When this method is called
-		 * the model must perform in such a way as to be able to restore
-		 * itself to its current state when the restore() method is called
-		 * at the end of the lookahead calculation. If this method is not
-		 * supported then it must throw a method_not_supported_exception,
-		 * which is the default.
-		 */
-		virtual void beginLookahead()
-		{
-			method_not_supported_exception ns("beginLookahead",this);
-			throw ns;
-		}
-		/**
-		 * This method is called when a lookahead calculation is finished.
-		 * The model must restore its state to that which it was in when
-		 * beginLookahead was called. The default implementation is to
-		 * do nothing.
-		 */
-		virtual void endLookahead(){}
 		/// Destructor.
 		virtual ~Atomic(){}
 		/// Returns a pointer to this model.
@@ -271,16 +225,49 @@ template <class X, class T = double> class Atomic: public Devs<X,T>
 		T tL;
 		// Index in the priority queue
 		unsigned int q_index;
+		// Thread assigned to this model
+		int proc;
 		// Input and output event bags
 		Bag<X> *x, *y;
-		// When did the model start checkpointing?
-		T tL_cp;
+};
+
+/**
+ * This is a Mealy type atomic model where its output
+ * may depend on its input. Mealy machines cannot be
+ * connected to other Mealy machines. An exception
+ * will be generated by the Simulator if you attempt
+ * to do so.
+ */
+
+template <typename X, typename T = double> class MealyAtomic:
+	public Atomic<X,T>
+{
+	public:
+		MealyAtomic<X,T>():Atomic<X,T>(),imm(false){}
+		MealyAtomic<X,T>* typeIsMealyAtomic() { return this; }
+		/**
+		 * Produce output at e < ta(q) in response to xb.
+		 * This is output preceding an external event.
+		 */
+		virtual void output_func(T e, const Bag<X>& xb, Bag<X>& yb) = 0;
+		/**
+		 * Produce output at e = ta(q) in response to xb.
+		 * This is output preceding a confluent event.
+		 */
+		virtual void output_func(const Bag<X>& xb, Bag<X>& yb) = 0;
+		virtual ~MealyAtomic(){}
+
+	private:
+
+		friend class Simulator<X,T>;
+
+		bool imm;
 };
 
 /**
  * Base class for DEVS network models.
  */
-template <class X, class T = double> class Network: public Devs<X,T>
+template <typename X, typename T = double> class Network: public Devs<X,T>
 {
 	public:
 		/// Constructor.

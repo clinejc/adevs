@@ -73,7 +73,6 @@ libadevs_la_include_HEADERS += $(adevs_inc_dir)/object_pool.h
 
 ADEVS_OBJS = rv.cpp
 ADEVS_OBJS += poly.cpp
-ADEVS_OBJS += time.cpp
 
 # need to enable sub-dir object
 AUTOMAKE_OPTIONS = subdir-objects
@@ -84,6 +83,15 @@ JAVA_OBJS += adevs_jni/JavaEventListenerManager.cpp
 JAVA_OBJS += adevs_jni/JavaNetwork.cpp
 JAVA_OBJS += adevs_jni/JavaSimulator.cpp
 
+QEMU_OBJS = \
+	qemu/computer.cpp \
+	qemu/device_model.cpp \
+	qemu/nic.cpp \
+	qemu/serial_port.cpp \
+	qemu/ucsim_serial_port.cpp \
+	qemu/qqq_rpc.cpp \
+	qemu/ucsim_rpc.cpp
+
 AM_CPPFLAGS = -I$(adevs_inc_dir)
 AM_CPPFLAGS += -I$(JAVA_HOME)/include -I$(JAVA_HOME)/include/darwin
 
@@ -92,6 +100,8 @@ lib_LTLIBRARIES = libadevs.la
 lib_LTLIBRARIES += libjava_adevs.la
 
 libadevs_la_SOURCES= $(libadevs_la_include_HEADERS) $(ADEVS_OBJS)
+# This builds the library with QEMU extensions
+#libadevs_la_SOURCES= $(libadevs_la_include_HEADERS) $(ADEVS_OBJS)
 
 libadevs_la_includedir=$(includedir)/adevs
 

@@ -37,7 +37,6 @@
 #include "adevs_bag.h"
 #include "adevs_set.h"
 #include "object_pool.h"
-#include "adevs_lp.h"
 #include <cassert>
 #include <cstdlib>
 #include <iostream>
@@ -49,8 +48,9 @@ namespace adevs
 /**
  * This Simulator class implements the DEVS simulation algorithm.
  * Its methods throw adevs::exception objects if any of the DEVS model
- * constraints are violated (i.e., a negative time advance or a model
- * attempting to send an input directly to itself).
+ * constraints are violated (i.e., a negative time advance, a model
+ * attempting to send an input directly to itself, or coupled Mealy
+ * type systems).
  */
 template <class X, class T = double> class Simulator:
 	public AbstractSimulator<X,T>,
@@ -66,7 +66,7 @@ template <class X, class T = double> class Simulator:
 		Simulator(Devs<X,T>* model):
 			AbstractSimulator<X,T>(),
 			Schedule<X,T>::ImminentVisitor(),
-			lps(NULL)
+			io_up_to_date(false)
 		{
 			schedule(model,adevs_zero<T>());
 		}
@@ -81,8 +81,7 @@ template <class X, class T = double> class Simulator:
 		/// Execute the simulation cycle at time nextEventTime()
 		void execNextEvent()
 		{
-			computeNextOutput();
-			computeNextState(bogus_input,sched.minPriority());
+			computeNextState();
 		}
 		/// Execute until nextEventTime() > tend
 		void execUntil(T tend)
@@ -99,14 +98,37 @@ template <class X, class T = double> class Simulator:
 		 */
 		void computeNextOutput();
 		/**
+		 * Compute the output value of the model in response to an input
+		 * at some time in lastEventTime() <= t <= nextEventTime().
+		 * This will notify registered EventListeners as the outputs
+		 * are produced. If this is the first call since the prior
+		 * state change with the given t, then the new output is computed.
+		 * Subsequent calls for the same time t simply
+		 * append to the input already supplied at time t.
+		 * @param input A bag of (input target,value) pairs
+		 * @param t The time at which the input takes effect
+		 */
+		void computeNextOutput(Bag<Event<X,T> >& input, T t);
+		/**
 		 * Apply the bag of inputs at time t and then compute the next model
 		 * states. Requires that lastEventTime() <= t <= nextEventTime().
 		 * This, in effect, implements the state transition function of 
-		 * the resultant model.
+		 * the resultant model. If the output has already been computed
+		 * at time t, then the new input at t is simply appended to the
+		 * prior input. Otherwise, the old results are discarded and input
+		 * is calculated at the given time.
 		 * @param input A bag of (input target,value) pairs
 		 * @param t The time at which the input takes effect
 		 */
 		void computeNextState(Bag<Event<X,T> >& input, T t);
+		/**
+		 * Compute the next state at the time at the time t and with
+		 * input supplied at the prior call to computeNextOutput
+		 * assuming no computeNextState has intervened. Assumes
+		 * t = nextEventTime() and input an empty bag if there was
+		 * no prior call to computeNextOutput.
+		 */
+		void computeNextState();
 		/**
 		 * Deletes the simulator, but leaves the model intact. The model must
 		 * exist when the simulator is deleted.  Delete the model only after
@@ -121,54 +143,17 @@ template <class X, class T = double> class Simulator:
 		{
 			schedule(model,adevs_zero<T>());
 		}
-		/**
-		 * Create a simulator that will be used by an LP as part of a parallel
-		 * simulation. This method is used by the parallel simulator.
-		 */
-		Simulator(LogicalProcess<X,T>* lp);
-		/**
-		 * <P>Call this method to indicate that all subsequent calls are part
-		 * of a lookahead calculation. Lookahead calculations will cause
-		 * the atomic models involved to save their states at the point
-		 * that the lookahead calculation was begun. These states are
-		 * restored when the lookahead calculation ends.</P>
-		 * <P>Lookahead calculations are done with the lookNextEvent method,
-		 * which may throw a lookahead_impossible_exception. This occurs when
-		 * the simulator calculate a new state for an atomic model
-		 * whose beginLookahead method is unsupported.</P>
-		 */
-		void beginLookahead();
-		/**
-		 * This call terminates a lookahead calculation and restores the
-		 * models to their states when beginLookahead was called.
-		 */
-		void endLookahead();
-		/**
-		 * Look at future events assuming a input trajector with only
-		 * non-events. This has the same effect as calling execNextEvent
-		 * but the simulator can be restored to its prior state by
-		 * calling endLookahead. 
-		 */
-		void lookNextEvent();
 	private:
-		typedef enum { OUTPUT_OK, OUTPUT_NOT_OK, RESTORING_OUTPUT } OutputStatus;
-		// Structure to support parallel computing by a logical process
-		struct lp_support
-		{
-			// The processor that this simulator works for
-			LogicalProcess<X,T>* lp;
-			bool look_ahead, stop_forced;
-			OutputStatus out_flag;
-			Bag<Atomic<X,T>*> to_restore;
-		};
-		// This is NULL if the simulator is not supporting a logical process
-		lp_support* lps;
 		// Bogus input bag for execNextEvent() method
 		Bag<Event<X,T> > bogus_input;
 		// The event schedule
 		Schedule<X,T> sched;
 		// List of models that are imminent or activated by input
 		Bag<Atomic<X,T>*> activated;
+		// Mealy systems that we need to process
+		bool allow_mealy_input, io_up_to_date;
+		T io_time;
+		Bag<MealyAtomic<X,T>*> mealy;
 		// Pools of preallocated, commonly used objects
 		object_pool<Bag<X> > io_pool;
 		object_pool<Bag<Event<X,T> > > recv_pool;
@@ -255,22 +240,9 @@ template <class X, class T = double> class Simulator:
 		 */
 		void clean_up(Devs<X,T>* model);
 		/**
-		 * Execute the state transition function using t to compute the
-		 * elapsed time as t-model->tL. This adds the model to the nx bag 
-		 * if it is a network executive and updates the added
-		 * and removed sets. 
-		 */
-		void exec_event(Atomic<X,T>* model, T t);
-		/**
 		 * Construct the complete descendant set of a network model and store it in s.
 		 */
 		void getAllChildren(Network<X,T>* model, Set<Devs<X,T>*>& s);
-		/**
-		 * Update data structures needed for a reset of the simulator
-		 * following a speculative lookahead. Returns true if the
-		 * lookahead can be managed. False otherwise.
-		 */
-		bool manage_lookahead_data(Atomic<X,T>* model);
 		/**
 		 * Visit method inhereted from ImminentVisitor
 		 */
@@ -281,6 +253,16 @@ template <class X, class T>
 void Simulator<X,T>::visit(Atomic<X,T>* model)
 {
 	assert(model->y == NULL);
+	// Mealy models are processed after the Moore models
+	if (model->typeIsMealyAtomic() != NULL)
+	{
+		model->typeIsMealyAtomic()->imm = true;
+		assert(model->y == NULL);
+		// May be in the mealy list because of a route call
+		if (model->x == NULL)
+			mealy.insert(model->typeIsMealyAtomic());
+		return;
+	}
 	model->y = io_pool.make_obj();
 	// Put it in the active list if it is not already there
 	if (model->x == NULL)
@@ -297,19 +279,10 @@ void Simulator<X,T>::visit(Atomic<X,T>* model)
 }
 
 template <class X, class T>
-void Simulator<X,T>::computeNextOutput()
+void Simulator<X,T>::computeNextOutput(Bag<Event<X,T> >& input, T t)
 {
-	// If the imminent set is up to date, then just return
-	if (activated.empty() == false) return;
-	// Get the imminent models from the schedule. 
-	sched.visitImminent(this);
-}
-
-template <class X, class T>
-void Simulator<X,T>::computeNextState(Bag<Event<X,T> >& input, T t)
-{
-	// Clean up if there was a previous IO calculation
-	if (t < sched.minPriority())
+	// Undo any prior output calculation at another time
+	if (io_up_to_date && !(io_time == t))
 	{
 		typename Bag<Atomic<X,T>*>::iterator iter;
 		for (iter = activated.begin(); iter != activated.end(); iter++)
@@ -318,14 +291,14 @@ void Simulator<X,T>::computeNextState(Bag<Event<X,T> >& input, T t)
 		}
 		activated.clear();
 	}
-	// Otherwise, if the internal IO needs to be computed, do it
-	else if (t == sched.minPriority())
-	{
-		computeNextOutput();
-	}
+	// Get the imminent Moore models from the schedule if we have not
+	// already done so.
+	allow_mealy_input = true;
+	if (t == sched.minPriority() && !io_up_to_date)
+		sched.visitImminent(this);
 	// Apply the injected inputs
 	for (typename Bag<Event<X,T> >::iterator iter = input.begin(); 
-	iter != input.end(); iter++)
+		iter != input.end(); iter++)
 	{
 		Atomic<X,T>* amodel = (*iter).model->typeIsAtomic();
 		if (amodel != NULL)
@@ -337,17 +310,116 @@ void Simulator<X,T>::computeNextState(Bag<Event<X,T> >& input, T t)
 			route((*iter).model->typeIsNetwork(),(*iter).model,(*iter).value);
 		}
 	}
+	// Only Moore models can influence Mealy models. 
+	allow_mealy_input = false;
+	// Iterate over activated Mealy models to calculate their output
+	for (typename Bag<MealyAtomic<X,T>*>::iterator m_iter = mealy.begin();
+		m_iter != mealy.end(); m_iter++)
+	{
+		MealyAtomic<X,T> *model = *m_iter;
+		assert(model->y == NULL);
+		model->y = io_pool.make_obj();
+		// Put it in the active set if it is not already there
+		if (model->x == NULL)
+			activated.insert(model);
+		// Compute output functions and route the events. The bags of output
+		// are held for garbage collection at a later time.
+		if (model->imm) // These are the imminent Mealy models
+		{
+			if (model->x == NULL)
+				model->typeIsAtomic()->output_func(*(model->y));
+			else
+				model->output_func(*(model->x),*(model->y));
+		}
+		else
+		{
+			assert(model->x != NULL);
+			// These are the Mealy models activated by input
+			model->output_func(sched.minPriority()-model->tL,*(model->x),*(model->y));
+		}
+	}
+	// Translate Mealy output to inputs for Moore models. The route method
+	// will throw an exception if an event is sent to a Mealy model.
+	for (typename Bag<MealyAtomic<X,T>*>::iterator m_iter = mealy.begin();
+		m_iter != mealy.end(); m_iter++)
+	{
+		MealyAtomic<X,T> *model = *m_iter;
+		// Route each event in y
+		for (typename Bag<X>::iterator y_iter = model->y->begin(); 
+			y_iter != model->y->end(); y_iter++)
+		{
+			route(model->getParent(),model,*y_iter);
+		}
+	}
+	mealy.clear();
+	// Record the time of the input
+	io_up_to_date = true;
+	io_time = t;
+
+}
+
+template<class X, class T>
+void Simulator<X,T>::computeNextOutput()
+{
+	computeNextOutput(bogus_input,sched.minPriority());
+}
+
+template <class X, class T>
+void Simulator<X,T>::computeNextState(Bag<Event<X,T> >& input, T t)
+{
+	computeNextOutput(input,t);
+	assert(io_time == t && io_up_to_date);
+	computeNextState();
+}
+
+template <class X, class T>
+void Simulator<X,T>::computeNextState()
+{
+	if (!io_up_to_date)
+		computeNextOutput();
+	io_up_to_date = false;
+	T t = io_time, tQ = io_time + adevs_epsilon<T>();
 	/*
 	 * Compute the states of atomic models.  Store Network models that 
 	 * need to have their model transition function evaluated in a
 	 * special container that will be used when the structure changes are
-	 * computed (see exec_event(.)).
+	 * computed.
 	 */
-	for (typename Bag<Atomic<X,T>*>::iterator iter = activated.begin(); 
-		iter != activated.end(); iter++)
+	#ifdef _OPENMP
+	#pragma omp parallel for
+	#endif
+	for (unsigned i = 0; i < activated.size(); i++)
 	{
-		exec_event(*iter,t); 
+		Atomic<X,T>* model = activated[i];
+		// Internal event if no input
+		if (model->x == NULL)
+			model->delta_int();
+		// Confluent event if model is imminent and has input
+		else if (
+				(model->typeIsMealyAtomic() == NULL && model->y != NULL)
+				|| (model->typeIsMealyAtomic() != NULL && model->typeIsMealyAtomic()->imm)
+			)
+			model->delta_conf(*(model->x));
+		// External event if model is not imminent and has input
+		else
+			model->delta_ext(t-model->tL,*(model->x));
+		// Notify listeners 
+		this->notify_state_listeners(model,tQ);
+		// Check for a model transition
+		if (model->model_transition() && model->getParent() != NULL)
+		{
+			#ifdef _OPENMP
+			#pragma omp critical
+			#endif
+			model_func_eval_set.insert(model->getParent());
+		}
+		// Adjust position in the schedule
+		schedule(model,tQ);
 	}
+	/**
+	 * The new states are in effect at t + eps so advance t
+	 */
+	t = tQ;
 	/**
 	 * Compute model transitions and build up the prev (pre-transition)
 	 * and next (post-transition) component sets. These sets are built
@@ -432,16 +504,9 @@ void Simulator<X,T>::computeNextState(Bag<Event<X,T> >& input, T t)
 		iter != activated.end(); iter++)
 	{
 		clean_up(*iter);
-		schedule(*iter,t);
 	}
 	// Empty the bags
 	activated.clear();
-	// If we are looking ahead, throw an exception if a stop was forced
-	if (lps != NULL && lps->stop_forced)
-	{
-		lookahead_impossible_exception err;
-		throw err;
-	}
 }
 
 template <class X, class T>
@@ -462,6 +527,10 @@ void Simulator<X,T>::clean_up(Devs<X,T>* model)
 			amodel->y->clear();
 			io_pool.destroy_obj(amodel->y);
 			amodel->y = NULL;
+		}
+		if (amodel->typeIsMealyAtomic() != NULL)
+		{
+			amodel->typeIsMealyAtomic()->imm = false;
 		}
 	}
 	else
@@ -504,15 +573,26 @@ void Simulator<X,T>::schedule(Devs<X,T>* model, T t)
 	{
 		a->tL = t;
 		T dt = a->ta();
-		if (dt < adevs_zero<T>())
-		{
-			exception err("Negative time advance",a);
-			throw err;
-		}
 		if (dt == adevs_inf<T>())
+		{
+			#ifdef _OPENMP
+			#pragma omp critical
+			#endif
 			sched.schedule(a,adevs_inf<T>());
+		}
 		else
-			sched.schedule(a,t+dt);
+		{
+			T tNext = a->tL+dt;
+			if (tNext < a->tL)
+			{
+				exception err("Negative time advance",a);
+				throw err;
+			}
+			#ifdef _OPENMP
+			#pragma omp critical
+			#endif
+			sched.schedule(a,tNext);
+		}
 	}
 	else
 	{
@@ -529,6 +609,24 @@ void Simulator<X,T>::schedule(Devs<X,T>* model, T t)
 template <class X, class T>
 void Simulator<X,T>::inject_event(Atomic<X,T>* model, X& value)
 {
+	// If this is a Mealy model, add it to the list of models that
+	// will need their input calculated
+	if (model->typeIsMealyAtomic())
+	{
+		if (allow_mealy_input)
+		{
+			assert(model->y == NULL);
+			// Add it to the list of its not already there
+			if (model->x == NULL && !model->typeIsMealyAtomic()->imm)
+				mealy.insert(model->typeIsMealyAtomic());
+		}
+		else
+		{
+			exception err("Mealy model coupled to a Mealy model",model);
+			throw err;
+		}
+	}
+	// Add the output to the model's bag of output to be processed
 	if (model->x == NULL)
 	{
 		if (model->y == NULL)
@@ -542,7 +640,7 @@ template <class X, class T>
 void Simulator<X,T>::route(Network<X,T>* parent, Devs<X,T>* src, X& x)
 {
 	// Notify event listeners if this is an output event
-	if (parent != src && (lps == NULL || lps->out_flag != RESTORING_OUTPUT))
+	if (parent != src)
 		this->notify_output_listeners(src,x,sched.minPriority());
 	// No one to do the routing, so return
 	if (parent == NULL) return;
@@ -554,12 +652,6 @@ void Simulator<X,T>::route(Network<X,T>* parent, Devs<X,T>* src, X& x)
 	typename Bag<Event<X,T> >::iterator recv_iter = recvs->begin();
 	for (; recv_iter != recvs->end(); recv_iter++)
 	{
-		// Check for self-influencing error condition
-		if (src == (*recv_iter).model)
-		{
-			exception err("Model tried to influence self",src);
-			throw err;
-		}
 		/**
 		 * If the destination is an atomic model, add the event to the IO bag
 		 * for that model and add model to the list of activated models
@@ -567,12 +659,7 @@ void Simulator<X,T>::route(Network<X,T>* parent, Devs<X,T>* src, X& x)
 		amodel = (*recv_iter).model->typeIsAtomic();
 		if (amodel != NULL)
 		{
-			// Inject it only if it is assigned to our processor
-			if (lps == NULL || amodel->getProc() == lps->lp->getID())
-				inject_event(amodel,(*recv_iter).value);
-			// Otherwise tell the lp about it
-			else if (lps->out_flag != RESTORING_OUTPUT)
-				lps->lp->notifyInput(amodel,(*recv_iter).value);
+			inject_event(amodel,(*recv_iter).value);
 		}
 		// if this is an external output from the parent model
 		else if ((*recv_iter).model == parent)
@@ -588,28 +675,6 @@ void Simulator<X,T>::route(Network<X,T>* parent, Devs<X,T>* src, X& x)
 	}
 	recvs->clear();
 	recv_pool.destroy_obj(recvs);
-}
-
-template <class X, class T>
-void Simulator<X,T>::exec_event(Atomic<X,T>* model, T t)
-{
-	if (!manage_lookahead_data(model)) return;
-	// Internal event
-	if (model->x == NULL)
-		model->delta_int();
-	// Confluent event
-	else if (model->y != NULL)
-		model->delta_conf(*(model->x));
-	// External event
-	else
-		model->delta_ext(t-model->tL,*(model->x));
-	// Notify any listeners
-	this->notify_state_listeners(model,t);
-	// Check for a model transition
-	if (model->model_transition() && model->getParent() != NULL)
-	{
-		model_func_eval_set.insert(model->getParent());
-	}
 }
 
 template <class X, class T>
@@ -640,81 +705,6 @@ Simulator<X,T>::~Simulator()
 	{
 		clean_up(*iter);
 	}
-}
-
-template <class X, class T>
-Simulator<X,T>::Simulator(LogicalProcess<X,T>* lp):
-	AbstractSimulator<X,T>()
-{
-	lps = new lp_support;
-	lps->lp = lp;
-	lps->look_ahead = false;
-	lps->stop_forced = false;
-	lps->out_flag = OUTPUT_OK;
-}
-
-template <class X, class T>
-void Simulator<X,T>::beginLookahead()
-{
-	if (lps == NULL)
-	{
-		adevs::exception err("tried to lookahead without lp support");
-		throw err;
-	}
-	lps->look_ahead = true;
-	if (!activated.empty())
-		lps->out_flag = OUTPUT_NOT_OK; 
-}
-
-template <class X, class T>
-void Simulator<X,T>::lookNextEvent()
-{
-	execNextEvent();
-}
-
-template <class X, class T>
-void Simulator<X,T>::endLookahead()
-{
-	if (lps == NULL) return;
-	typename Bag<Atomic<X,T>*>::iterator iter = lps->to_restore.begin();
-	for (; iter != lps->to_restore.end(); iter++)
-	{
-		(*iter)->endLookahead();
-		schedule(*iter,(*iter)->tL_cp);
-		(*iter)->tL_cp = adevs_sentinel<T>();
-		assert((*iter)->x == NULL);
-		assert((*iter)->y == NULL);
-	}
-	lps->to_restore.clear();
-	assert(activated.empty());
-	if (lps->out_flag == OUTPUT_NOT_OK)
-	{
-		lps->out_flag = RESTORING_OUTPUT;
-		computeNextOutput();
-		lps->out_flag = OUTPUT_OK;
-	}
-	lps->look_ahead = false;
-	lps->stop_forced = false;
-}
-
-template <class X, class T>
-bool Simulator<X,T>::manage_lookahead_data(Atomic<X,T>* model)
-{
-	if (lps == NULL) return true;
-	if (lps->look_ahead && model->tL_cp < adevs_zero<T>())
-	{
-		lps->to_restore.insert(model);
-		model->tL_cp = model->tL;
-		try
-		{
-			model->beginLookahead();
-		}
-		catch(method_not_supported_exception err)
-		{
-			lps->stop_forced = true;
-		}
-	}
-	return !(lps->stop_forced);
 }
 
 } // End of namespace
