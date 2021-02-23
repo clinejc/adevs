@@ -45,7 +45,7 @@ template <class X> class CellEvent
 {
 	public:
 		/// Default constructor. Sets x = y = z = 0.
-		CellEvent(){ x = y = z = 0; }
+		CellEvent():value() { x = y = z = 0; }
 		/// Copy constructor
 		CellEvent(const CellEvent<X>& src):
 		x(src.x),y(src.y),z(src.z),value(src.value){}
@@ -81,8 +81,13 @@ template <class X, class T = double> class CellSpace: public Network<CellEvent<X
 	public:
 		/// A component model in the CellSpace
 		typedef Devs<CellEvent<X>,T> Cell;
+  		/// Create default CellSpace
+		CellSpace();
 		/// Create an Width x Height x Depth CellSpace with NULL entries in the cell locations.
 		CellSpace(long int width, long int height = 1, long int depth = 1);
+  		/// Create an Width x Height x Depth CellSpace with NULL entries in the cell locations.
+		void createSpace(long int width, long int height = 1, long int depth = 1);
+
 		/// Insert a model at the x,y,z position.
 		void add(Cell* model, long int x, long int y = 0, long int z = 0) 
 		{
@@ -107,6 +112,7 @@ template <class X, class T = double> class CellSpace: public Network<CellEvent<X
 		long int getDepth() const { return d; }
 		/// Get the model's set of components
 		void getComponents(Set<Cell*>& c);
+  		void getComponents(Set<const Cell*>& c) const;
 		/// Route events within the Cellspace
 		void route(const CellEvent<X>& event, Cell* model, 
 		Bag<Event<CellEvent<X>,T> >& r);
@@ -117,6 +123,17 @@ template <class X, class T = double> class CellSpace: public Network<CellEvent<X
 		Cell**** space;
 };
 
+// Implementation of default constructor
+template <class X, class T>
+CellSpace<X,T>::CellSpace():
+Network<CellEvent<X>,T>(),
+w(0),
+h(0),
+d(0),
+space(0)
+{
+}
+  
 // Implementation of constructor
 template <class X, class T>
 CellSpace<X,T>::CellSpace(long int width, long int height, long int depth):
@@ -163,6 +180,49 @@ CellSpace<X,T>::~CellSpace()
 	delete [] space;
 }
 
+// Implementation of the createSpace() method
+template <class X,class T>
+void CellSpace<X,T>::createSpace(long int width, long int height, long int depth)
+{
+        // First destroy previously allocated space
+	for (long int x = 0; x < w; x++)
+	{
+		for (long int y = 0; y < h; y++)
+		{
+			for (long int z = 0; z < d; z++)
+			{
+				if (space[x][y][z] != NULL)
+				{
+					delete space[x][y][z];
+				}
+			}
+			delete [] space[x][y];
+		}
+		delete [] space[x];
+	}
+	delete [] space;
+
+        // Resize space
+	w = width;
+	h = height;
+	d = depth;
+	// Allocate space for the cells and set the entries to NULL
+	space = new Cell***[w];
+	for (long int x = 0; x < w; x++)
+	{
+		space[x] = new Cell**[h];
+		for (long int y = 0; y < h; y++)
+		{
+			space[x][y] = new Cell*[h];
+			for (long int z = 0; z < d; z++)
+			{
+				space[x][y][z] = NULL;
+			}
+		}
+	}
+
+}
+
 // Implementation of the getComponents() method
 template <class X, class T>
 void CellSpace<X,T>::getComponents(Set<Cell*>& c)
@@ -183,6 +243,25 @@ void CellSpace<X,T>::getComponents(Set<Cell*>& c)
 	}
 }
 
+template <class X, class T>
+void CellSpace<X,T>::getComponents(Set<const Cell*>& c) const
+{
+	// Add all non-null entries to the set c
+	for (long int x = 0; x < w; x++)
+	{
+		for (long int y = 0; y < h; y++)
+		{
+			for (long int z = 0; z < d; z++)
+			{
+				if (space[x][y][z] != NULL)
+				{
+					c.insert(space[x][y][z]);
+				}
+			}
+		}
+	}
+}
+  
 // Event routing function for the net_exec
 template <class X, class T>
 void CellSpace<X,T>::route(

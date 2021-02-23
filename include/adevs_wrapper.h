@@ -57,6 +57,10 @@ namespace adevs
 	{
 		public:
 			/**
+			 * Default constructor -- model to be wrapped to be specified later. 
+			 */
+			ModelWrapper();
+			/**
 			 * Create a wrapper for the specified model. The ModelWrapper takes
 			 * ownership of the supplied model and will delete it when the
 			 * ModelWrapper is deleted.
@@ -90,7 +94,17 @@ namespace adevs
 			 */
 			virtual void gc_input(Bag<Event<InternalType,T> >& g) = 0;
 			/// Get the model that is wrapped by this object
-			Devs<InternalType,T>* getWrappedModel() { return model; }
+	                std::shared_ptr<Devs<InternalType,T> > getWrappedModel() { return model; }
+	                std::shared_ptr<Devs<InternalType,T> > getWrappedModel() const { return model; }
+			/// Set the model that is wrapped by this object
+	                void setWrappedModel(const std::shared_ptr<Devs<InternalType,T> >& model);
+
+			/// Adds an event listener to wrapped simulation
+		        void addEventListener(EventListener<InternalType,T>* listnerer);
+			/// Set tL for the wrapped model
+			void setTime(double t) { tL = t; }
+			/// Get tL for the wrapped model
+			double getTime() const { return tL; }
 			/// Atomic internal transition function
 			void delta_int();
 			/// Atomic external transition function
@@ -106,7 +120,6 @@ namespace adevs
 			/// Destructor. This destroys the wrapped model too.
 			~ModelWrapper();
 		private:
-			ModelWrapper(){}
 			ModelWrapper(const ModelWrapper&){}
 			void operator=(const ModelWrapper&){}
 			// Bag of events created by the input translation method 
@@ -114,7 +127,7 @@ namespace adevs
 			// Output from the wrapped model
 			Bag<Event<InternalType,T> > output;
 			// The wrapped model
-			Devs<InternalType,T>* model;
+	                std::shared_ptr<Devs<InternalType,T> > model;
 			// Simulator for driving the wrapped model
 			Simulator<InternalType,T>* sim;
 			// Last event time
@@ -122,13 +135,23 @@ namespace adevs
 	};
 
 template <typename ExternalType, typename InternalType, class T> 
-ModelWrapper<ExternalType,InternalType,T>::ModelWrapper(Devs<InternalType,T>* model):
+ModelWrapper<ExternalType,InternalType,T>::ModelWrapper():
 	Atomic<ExternalType,T>(),
 	EventListener<InternalType,T>(),
-	model(model),
+	model(nullptr),
+	sim(NULL),
 	tL(adevs_zero<T>())
 {
-	sim = new Simulator<InternalType,T>(model);
+}
+
+template <typename ExternalType, typename InternalType, class T> 
+ModelWrapper<ExternalType,InternalType,T>::ModelWrapper(Devs<InternalType,T>* model2):
+	Atomic<ExternalType,T>(),
+	EventListener<InternalType,T>(),
+	model(model2),
+	tL(adevs_zero<T>())
+{
+        sim = new Simulator<InternalType,T>(model.get());
 	sim->addEventListener(this);
 }
 
@@ -198,8 +221,24 @@ void ModelWrapper<ExternalType,InternalType,T>::outputEvent(Event<InternalType,T
 template <typename ExternalType, typename InternalType, class T> 
 ModelWrapper<ExternalType,InternalType,T>::~ModelWrapper()
 {
-	delete sim;
-	delete model;
+        if (sim) delete sim;
+	//if (model) delete model;
+}
+
+template <typename ExternalType, typename InternalType, class T> 
+void ModelWrapper<ExternalType,InternalType,T>::setWrappedModel(const std::shared_ptr<Devs<InternalType,T> >& model2)
+{
+        if (sim) delete sim;
+	//if (model) delete model;
+	model = model2;
+	sim = new Simulator<InternalType,T>(model.get());
+	sim->addEventListener(this);
+}
+
+template <typename ExternalType, typename InternalType, class T> 
+void ModelWrapper<ExternalType,InternalType,T>::addEventListener(EventListener<InternalType,T>* listener)
+{
+	sim->addEventListener(listener);
 }
 
 } // end of namespace

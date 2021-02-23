@@ -31,6 +31,7 @@
 #ifndef __adevs_digraph_h_
 #define __adevs_digraph_h_
 #include "adevs.h"
+#include <cassert>
 #include <map>
 #include <set>
 #include <cstdlib>
@@ -93,7 +94,38 @@ public Network<PortValue<VALUE,PORT>,T>
 		typedef PortValue<VALUE,PORT> IO_Type;
 		/// A component of the Digraph model
 		typedef Devs<IO_Type,T> Component;
-
+  		/// A smart pointer to a component of the Digraph model
+                typedef std::shared_ptr<Devs<IO_Type,T> > ComponentPtr;
+		// A node in the coupling graph
+		struct nodeplus
+		{
+			nodeplus():
+			model(),
+			port()
+			{
+			}
+			nodeplus(const ComponentPtr& model, PORT port):
+			model(model),
+			port(port)
+			{
+			}
+			const nodeplus& operator=(const nodeplus& src)
+			{
+				model = src.model;
+				port = src.port;
+				return *this;
+			}
+			ComponentPtr model;
+			PORT port;
+		
+			// Comparison for STL map
+			bool operator<(const nodeplus& other) const
+			{
+			        if (model.get() == other.model.get()) return port < other.port;
+				return model < other.model;
+			}
+		};
+ 
 		/// Construct a network with no components.
 		Digraph():
 		Network<IO_Type,T>()
@@ -101,19 +133,27 @@ public Network<PortValue<VALUE,PORT>,T>
 		}
 		/// Add a model to the network.
 		void add(Component* model);
+                void add(const ComponentPtr& model);
 		/// Couple the source model to the destination model.  
 		void couple(Component* src, PORT srcPort, 
 		Component* dst, PORT dstPort);
+		/// returns a smart pointer for the specified component
+	        ComponentPtr getComponent(Component* model);
+		ComponentPtr getComponent(Component* model) const;
 		/// Puts the network's components into to c
 		void getComponents(Set<Component*>& c);
-		/// Route an event based on the coupling information.
+  		void getComponents(Set<Component*>& c) const;
+  		/// Puts the networks coupling information into g
+                void getGraph(std::map<nodeplus,std::set<nodeplus> >&g);
+                void getGraph(std::map<nodeplus,std::set<nodeplus> >&g) const;
+ 		/// Route an event based on the coupling information.
 		void route(const IO_Type& x, Component* model, 
 		Bag<Event<IO_Type,T> >& r);
 		/// Destructor.  Destroys all of the component models.
 		~Digraph();
 
-	private:	
-		// A node in the coupling graph
+	private:
+    		// A node in the coupling graph
 		struct node
 		{
 			node():
@@ -142,8 +182,11 @@ public Network<PortValue<VALUE,PORT>,T>
 				return model < other.model;
 			}
 		};
+
 		// Component model set
 		Set<Component*> models;
+		// Component model map to smart pointers
+		std::map<Component*,std::shared_ptr<Component> > modelMap;
 		// Coupling information
 		std::map<node,Bag<node> > graph;
 };
@@ -154,6 +197,20 @@ void Digraph<VALUE,PORT,T>::add(Component* model)
 	assert(model != this);
 	models.insert(model);
 	model->setParent(this);
+
+	if ( modelMap.find(model) == modelMap.end() )
+		modelMap[model] = std::shared_ptr<Component>(model);
+}
+
+template <class VALUE, class PORT, class T>
+void Digraph<VALUE,PORT,T>::add(const ComponentPtr& model)
+{
+        assert(model.get() != this);
+	models.insert(model.get());
+	model->setParent(this);
+
+	if ( modelMap.find(model.get()) == modelMap.end() )
+	        modelMap[model.get()] = model;
 }
 
 template <class VALUE, class PORT, class T>
@@ -168,9 +225,86 @@ Component* dst, PORT dstPort)
 }
 
 template <class VALUE, class PORT, class T>
+typename std::shared_ptr<Devs<PortValue<VALUE,PORT>,T> >
+Digraph<VALUE,PORT,T>::getComponent(Component* model)
+{
+	if (modelMap.find(model) == modelMap.end())
+		return nullptr;
+
+	return modelMap[model];
+}
+
+template <class VALUE, class PORT, class T>
+typename std::shared_ptr<Devs<PortValue<VALUE,PORT>,T> >
+Digraph<VALUE,PORT,T>::getComponent(Component* model) const
+{
+ 	try {
+	  	ComponentPtr lCp_devs = modelMap.at(model);
+	  	return lCp_devs;
+	}
+	catch(std::out_of_range lC_excp) {
+		// need to handle const map access
+		return nullptr;
+	}
+}
+
+template <class VALUE, class PORT, class T>
 void Digraph<VALUE,PORT,T>::getComponents(Set<Component*>& c)
 {
 	c = models;
+}
+
+template <class VALUE, class PORT, class T>
+void Digraph<VALUE,PORT,T>::getComponents(Set<Component*>& c) const
+{
+	c.clear();
+	typename Set<Component*>::iterator i;
+	for (i = models.begin(); i != models.end(); i++)
+	{
+		c.insert(*i);
+	}
+}
+
+template <class VALUE, class PORT, class T>
+void Digraph<VALUE,PORT,T>::getGraph(std::map< typename Digraph<VALUE,PORT,T>::nodeplus,std::set<typename Digraph<VALUE,PORT,T>::nodeplus> >& g)
+{
+        typename std::map<node,Bag<node> >::iterator graph_iter;
+	for (graph_iter = graph.begin();
+	     graph_iter != graph.end(); graph_iter++) {
+	     nodeplus src_node(getComponent( (*graph_iter).first.model ),
+			       (*graph_iter).first.port );
+	     src_node.model = getComponent( (*graph_iter).first.model );
+	     src_node.port = (*graph_iter).first.port;
+	    
+	     typename Bag<node>::iterator node_iter;
+	     for (node_iter = (*graph_iter).second.begin();
+		     node_iter != (*graph_iter).second.end(); node_iter++) {
+		    nodeplus dst_node(getComponent( (*node_iter).model ),
+				      (*node_iter).port);
+		    g[src_node].insert(dst_node);
+	     }		  
+	}
+}
+
+template <class VALUE, class PORT, class T>
+void Digraph<VALUE,PORT,T>::getGraph(std::map<typename Digraph<VALUE,PORT,T>::nodeplus,std::set<typename  Digraph<VALUE,PORT,T>::nodeplus> >& g) const
+{
+        typename std::map<node,Bag<node> >::const_iterator graph_iter;
+	for (graph_iter = graph.begin();
+	     graph_iter != graph.end(); graph_iter++) {
+	     nodeplus src_node(getComponent( (*graph_iter).first.model ),
+			       (*graph_iter).first.port );
+	     src_node.model = getComponent( (*graph_iter).first.model );
+	     src_node.port = (*graph_iter).first.port;
+	    
+	     typename Bag<node>::iterator node_iter;
+	     for (node_iter = (*graph_iter).second.begin();
+		     node_iter != (*graph_iter).second.end(); node_iter++) {
+		    nodeplus dst_node(getComponent( (*node_iter).model ),
+				      (*node_iter).port);
+		    g[src_node].insert(dst_node);
+	     }		  
+	}
 }
 
 template <class VALUE, class PORT, class T>
@@ -202,7 +336,8 @@ Digraph<VALUE,PORT,T>::~Digraph()
 	typename Set<Component*>::iterator i;
 	for (i = models.begin(); i != models.end(); i++)
 	{
-		delete *i;
+		// using smart pointers
+		//delete *i;
 	}
 }
 

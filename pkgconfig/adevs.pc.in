@@ -1,0 +1,10 @@
+prefix=@prefix@
+exec_prefix=@exec_prefix@
+libdir=@libdir@
+includedir=@includedir@
+
+Name: adevs
+Description: A C++ DEVS simulation library
+Version: @VERSION@
+Libs: -L${libdir} -ladevs
+Cflags: -I${includedir}/adevs

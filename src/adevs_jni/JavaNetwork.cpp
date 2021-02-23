@@ -3,7 +3,7 @@ using namespace adevs;
 using namespace std;
 
 JavaNetwork::JavaNetwork(jobject jmodel_loc_ref, JavaSimulator& owner):
-	Network<java_io>(),
+  Network<java_io, double>(),
 	JavaDevs(jmodel_loc_ref,owner)
 {
 	set_peer(this);

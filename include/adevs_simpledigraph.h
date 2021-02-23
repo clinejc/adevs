@@ -50,6 +50,10 @@ public Network<VALUE,T>
 		/// A component of the SimpleDigraph model
 		typedef Devs<VALUE,T> Component;
 
+                /// smart pointers to a component of the SimpleDigraph model
+                typedef std::shared_ptr<Devs<VALUE,T> > ComponentPtr;
+                typedef std::shared_ptr<const Devs<VALUE,T> > ConstComponentPtr;
+
 		/// Construct a network without components.
 		SimpleDigraph():
 		Network<VALUE,T>()
@@ -57,10 +61,18 @@ public Network<VALUE,T>
 		}
 		/// Add a model to the network.
 		void add(Component* model);
+                void add(const ComponentPtr& model);
 		/// Couple the source model to the destination model.  
 		void couple(Component* src, Component* dst);
+  		/// returns a smart pointer for the specified component
+		ComponentPtr getComponent(Component* model);
+		ComponentPtr getComponent(Component* model) const;
 		/// Puts the network's set of components into c
 		void getComponents(Set<Component*>& c);
+		void getComponents(Set<Component*>& c) const;
+ 		/// Assigns the coupling information to g
+                void getGraph(std::map<ComponentPtr,std::set<ComponentPtr> >&g);
+                void getGraph(std::map<ComponentPtr,std::set<ComponentPtr> >&g) const;
 		/// Route an event according to the network's couplings
 		void route(const VALUE& x, Component* model, 
 		Bag<Event<VALUE,T> >& r);
@@ -70,6 +82,8 @@ public Network<VALUE,T>
 	private:	
 		// The set of components
 		Set<Component*> models;
+  		// Component model map to smart pointers
+		std::map<const Component*,std::shared_ptr<Component> > modelMap;
 		// Coupling information
 		std::map<Component*,Bag<Component*> > graph;
 };
@@ -80,6 +94,20 @@ void SimpleDigraph<VALUE,T>::add(Component* model)
 	assert(model != this);
 	models.insert(model);
 	model->setParent(this);
+
+	if ( modelMap.find(model) == modelMap.end() )
+		modelMap[model] = std::shared_ptr<Component>(model);
+}
+
+template <class VALUE, class T>
+void SimpleDigraph<VALUE,T>::add(const ComponentPtr& model)
+{
+        assert(model.get() != this);
+	models.insert(model.get());
+	model->setParent(this);
+
+	if ( modelMap.find(model.get()) == modelMap.end() )
+	        modelMap[model.get()] = model;
 }
 
 template <class VALUE, class T>
@@ -91,9 +119,74 @@ void SimpleDigraph<VALUE,T>::couple(Component* src, Component* dst)
 }
 
 template <class VALUE, class T>
+std::shared_ptr<Devs<VALUE,T> >
+SimpleDigraph<VALUE,T>::getComponent(Component* model)
+{
+	if (modelMap.find(model) == modelMap.end())
+		return nullptr;
+
+	return modelMap[model];
+}
+
+template <class VALUE, class T>
+std::shared_ptr<Devs<VALUE,T> >
+SimpleDigraph<VALUE,T>::getComponent(Component* model) const
+{
+ 	try {
+	  	ComponentPtr lCp_devs = modelMap.at(model);
+	  	return lCp_devs;
+	}
+	catch(std::out_of_range lC_excp) {
+		// need to handle const map access
+		return nullptr;
+	}
+ }
+
+template <class VALUE, class T>
 void SimpleDigraph<VALUE,T>::getComponents(Set<Component*>& c)
 {
 	c = models;
+}
+
+template <class VALUE, class T>
+void SimpleDigraph<VALUE,T>::getComponents(Set<Component*>& c) const
+{
+	c.clear();
+	typename Set<Component*>::iterator i;
+	for (i = models.begin(); i != models.end(); i++)
+	{
+		c.insert(*i);
+	}
+}
+
+template <class VALUE, class T>
+void SimpleDigraph<VALUE, T>::getGraph(std::map<ComponentPtr,std::set<ComponentPtr> >& g)
+{
+	typename std::map<Component*,Bag<Component*> >::iterator graph_iter;
+	for (graph_iter = graph.begin(); graph_iter != graph.end(); graph_iter++) {
+		ComponentPtr src_model( getComponent((*graph_iter).first ) );
+		typename Bag<Component*>::iterator node_iter;
+		for (node_iter = (*graph_iter).second.begin();
+		     node_iter != (*graph_iter).second.end(); node_iter++) {
+		  ComponentPtr dst_model( getComponent( *node_iter ) );
+		  g[src_model].insert( dst_model);
+		}
+	}
+}
+
+template <class VALUE, class T>
+void SimpleDigraph<VALUE,T>::getGraph(std::map<ComponentPtr,std::set<ComponentPtr> >& g) const
+{
+	typename std::map<Component*,Bag<Component*> >::iterator graph_iter;
+	for (graph_iter = graph.begin(); graph_iter != graph.end(); graph_iter++) {
+		ComponentPtr src_model( getComponent((*graph_iter).first ) );
+		typename Bag<Component*>::iterator node_iter;
+		for (node_iter = (*graph_iter).second.begin();
+		     node_iter != (*graph_iter).second.end(); node_iter++) {
+		  ComponentPtr dst_model( getComponent( *node_iter ) );
+		  g[src_model].insert( dst_model);
+		}
+	}
 }
 
 template <class VALUE, class T>
@@ -124,7 +217,8 @@ SimpleDigraph<VALUE,T>::~SimpleDigraph()
 	typename Set<Component*>::iterator i;
 	for (i = models.begin(); i != models.end(); i++)
 	{
-		delete *i;
+		// using smart pointers
+		//delete *i;
 	}
 }
 
